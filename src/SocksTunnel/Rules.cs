@@ -20,6 +20,7 @@
                 {
                     _log.Debug($"Rule matched: {Describe(rule)} => {rule.Action}");
                     action = rule.Action!;
+                    break;
                 }
             }
             return string.Compare(action, "forward", true) == 0;
