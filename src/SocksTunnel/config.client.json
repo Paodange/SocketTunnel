@@ -1,0 +1,24 @@
+﻿{
+  "Mode": "client",
+  "Server": "127.0.0.1:6000",
+  "Socks": "127.0.0.1:1081",
+  "LogLevel": "INFO",
+  "Rules": [
+    {
+      "Action": "Forward",
+      "Host": "*.example.com"
+    },
+    {
+      "Action": "Forward",
+      "Port": 22
+    },
+    {
+      "Action": "Direct",
+      "IP": "10.0.0.0/8"
+    },
+    {
+      "Action": "Direct",
+      "Default": true
+    }
+  ]
+}

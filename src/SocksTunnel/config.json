@@ -1,0 +1,24 @@
+﻿{
+  "Mode": "server",
+  "TunnelListen": "0.0.0.0:6000",
+  "Socks": "127.0.0.1:1080",
+  "LogLevel": "INFO",
+  "Rules": [
+    {
+      "Action": "Forward",
+      "Host": "*.google.com"
+    },
+    {
+      "Action": "Forward",
+      "Port": 22
+    },
+    {
+      "Action": "Direct",
+      "IP": "10.0.0.0/8"
+    },
+    {
+      "Action": "Direct",
+      "Default": true
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>net9.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<PublishSingleFile>true</PublishSingleFile>
+		<InvariantGlobalization>true</InvariantGlobalization>
+		<TrimMode>full</TrimMode>
+		<DebuggerSupport>false</DebuggerSupport>
+		<EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
+		<PublishTrimmed>true</PublishTrimmed>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)'=='Release'">
+		<PublishAot>true</PublishAot>
+		<StripSymbols>true</StripSymbols>
+		<IlcGenerateStackTraceData>false</IlcGenerateStackTraceData>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="config.json" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="config.client.json" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="config.server.json" CopyToOutputDirectory="PreserveNewest" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Using Include="System.Net" />
+		<Using Include="System.Net.Sockets" />
+		<Using Include="System.Threading" />
+		<Using Include="System.Threading.Tasks" />
+	</ItemGroup>
+</Project>
