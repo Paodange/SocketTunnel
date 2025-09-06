@@ -4,17 +4,6 @@ using System.Collections.Concurrent;
 
 namespace SocksTunnel
 {
-    public enum FrameType : byte
-    {
-        Open = 1,
-        Data = 2,
-        Close = 3,
-        OpenResult = 4,
-        Ping = 5,
-        Pong = 6,
-        Hello = 7
-    }
-
     public sealed class Tunnel : IAsyncDisposable
     {
         private readonly Logger _log;
@@ -55,7 +44,8 @@ namespace SocksTunnel
             {
                 while (!token.IsCancellationRequested)
                 {
-                    await ReadExactAsync(ns, head, token);
+                    await ns.ReadExactlyAsync(head, token);
+                    //await ReadExactAsync(ns, head, token);
                     var type = (FrameType)head[0];
                     int sid = BinaryPrimitives.ReadInt32BigEndian(head.AsSpan(1, 4));
                     int len = BinaryPrimitives.ReadInt32BigEndian(head.AsSpan(5, 4));
@@ -63,7 +53,8 @@ namespace SocksTunnel
                     byte[] payload = len > 0 ? ArrayPool<byte>.Shared.Rent(len) : Array.Empty<byte>();
                     try
                     {
-                        if (len > 0) await ReadExactAsync(ns, payload.AsMemory(0, len), token);
+                        //if (len > 0) await ReadExactAsync(ns, payload.AsMemory(0, len), token);
+                        if (len > 0) await ns.ReadExactlyAsync(payload.AsMemory(0, len), token);
                         await DispatchAsync(type, sid, payload, len, token);
                     }
                     finally
@@ -133,6 +124,11 @@ namespace SocksTunnel
                                 return;
                         }
                         ushort port = BinaryPrimitives.ReadUInt16BigEndian(payload.AsSpan(idx, 2));
+
+                        // FIX: 为对端发起的流预先建立本地状态占位
+                        _streams.TryAdd(sid, new StreamState(sid));
+
+                        // 交给上层回调去直连目标与安装 Sink
                         _ = _onOpenRemote(sid, atyp, addrBytes, port);
                     }
                     break;
@@ -195,8 +191,10 @@ namespace SocksTunnel
             return sid;
         }
 
-        public Task SendDataAsync(int sid, ReadOnlyMemory<byte> data, CancellationToken token) =>
-            SendFrameAsync(FrameType.Data, sid, data, token);
+        public async Task SendDataAsync(int sid, ReadOnlyMemory<byte> data, CancellationToken token)
+        {
+            await SendFrameAsync(FrameType.Data, sid, data, token);
+        }
 
         public async Task SendCloseAsync(int sid, CancellationToken token)
         {
@@ -216,8 +214,10 @@ namespace SocksTunnel
             return SendFrameAsync(FrameType.Hello, 0, bytes, token);
         }
 
-        public Task SendPingAsync(CancellationToken token) =>
-            SendFrameAsync(FrameType.Ping, 0, ReadOnlyMemory<byte>.Empty, token);
+        public async Task SendPingAsync(CancellationToken token)
+        {
+            await SendFrameAsync(FrameType.Ping, 0, ReadOnlyMemory<byte>.Empty, token);
+        }
 
         private async Task SendFrameAsync(FrameType type, int sid, ReadOnlyMemory<byte> payload, CancellationToken token)
         {
@@ -309,99 +309,6 @@ namespace SocksTunnel
             public Func<ReadOnlyMemory<byte>, CancellationToken, Task>? IncomingSink { get; set; }
             public Action? OnClosed { get; set; }
             public StreamState(int id) { Id = id; }
-        }
-    }
-
-    public sealed class TunnelServer
-    {
-        private readonly IPEndPoint _listenEp;
-        private readonly Logger _log;
-        private readonly Func<Tunnel> _tunnelFactory;
-        private CancellationTokenSource? _cts;
-        private Task? _acceptTask;
-
-        public TunnelServer(IPEndPoint listenEp, Logger log, Func<Tunnel> tunnelFactory)
-        {
-            _listenEp = listenEp; _log = log; _tunnelFactory = tunnelFactory;
-        }
-
-        public void Start()
-        {
-            _cts = new CancellationTokenSource();
-            _acceptTask = Task.Run(() => AcceptLoop(_cts.Token));
-        }
-
-        private async Task AcceptLoop(CancellationToken token)
-        {
-            var listener = new TcpListener(_listenEp);
-            listener.Start();
-            _log.Info($"Tunnel server listening at {_listenEp}");
-
-            while (!token.IsCancellationRequested)
-            {
-                try
-                {
-                    var client = await listener.AcceptTcpClientAsync(token);
-                    _log.Info($"Tunnel incoming connection from {client.Client.RemoteEndPoint}");
-                    var tunnel = _tunnelFactory();
-                    await tunnel.AttachAsync(client, "server", token);
-                }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex)
-                {
-                    _log.Warn($"Accept error: {ex.Message}");
-                    await Task.Delay(1000, token);
-                }
-            }
-            listener.Stop();
-        }
-
-        public async Task StopAsync()
-        {
-            _cts?.Cancel();
-            if (_acceptTask is not null) try { await _acceptTask; } catch { }
-        }
-    }
-
-    public sealed class TunnelClientConnector
-    {
-        private readonly IPEndPoint _serverEp;
-        private readonly Logger _log;
-        private readonly Func<Tunnel> _tunnelFactory;
-        private readonly TimeSpan _reconn;
-
-        public TunnelClientConnector(IPEndPoint serverEp, Logger log, Func<Tunnel> tunnelFactory, TimeSpan reconnect)
-        {
-            _serverEp = serverEp; _log = log; _tunnelFactory = tunnelFactory; _reconn = reconnect;
-        }
-
-        public async Task RunAsync(CancellationToken token)
-        {
-            while (!token.IsCancellationRequested)
-            {
-                try
-                {
-                    var client = new TcpClient { NoDelay = true };
-                    _log.Info($"Connecting to tunnel server {_serverEp} ...");
-                    await client.ConnectAsync(_serverEp, token);
-                    _log.Info("Tunnel connected.");
-
-                    var tunnel = _tunnelFactory();
-                    await tunnel.AttachAsync(client, "client", token);
-
-                    while (!token.IsCancellationRequested && tunnel.IsConnected)
-                    {
-                        await Task.Delay(TimeSpan.FromSeconds(15), token);
-                        await tunnel.SendPingAsync(token);
-                    }
-                }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex)
-                {
-                    _log.Warn($"Tunnel connect/retry: {ex.Message}");
-                    await Task.Delay(_reconn, token);
-                }
-            }
         }
     }
 }

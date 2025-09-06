@@ -14,14 +14,17 @@ namespace SocksTunnel
     {
         private readonly IPEndPoint _listen;
         private readonly Logger _log;
-        private readonly RuleEngine _rules;
+        private readonly RuleEngine _ruleEngine;
         private readonly Func<CancellationToken, Tunnel?> _getTunnel;
         private TcpListener? _listener;
         private CancellationTokenSource? _cts;
 
-        public Socks5Proxy(IPEndPoint listen, RuleEngine rules, Logger log, Func<CancellationToken, Tunnel?> getTunnel)
+        public Socks5Proxy(IPEndPoint listen, RuleEngine ruleEngine, Logger log, Func<CancellationToken, Tunnel?> getTunnel)
         {
-            _listen = listen; _rules = rules; _log = log; _getTunnel = getTunnel;
+            _listen = listen;
+            _ruleEngine = ruleEngine;
+            _log = log;
+            _getTunnel = getTunnel;
         }
 
         public void Start()
@@ -132,7 +135,7 @@ namespace SocksTunnel
             await ns.ReadExactlyAsync(portBytes, token);
             ushort port = BinaryPrimitives.ReadUInt16BigEndian(portBytes);
 
-            bool shouldForward = _rules.ShouldForward(host, ip, port);
+            bool shouldForward = _ruleEngine.ShouldForward(host, ip, port);
             if (shouldForward)
             {
                 var tunnel = _getTunnel(token);

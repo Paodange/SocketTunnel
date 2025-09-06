@@ -8,7 +8,7 @@ namespace SocksTunnel
         private static readonly CancellationTokenSource _cts = new();
         private static Tunnel? _tunnel;
         private static Logger? _log;
-        private static RuleEngine? _rules;
+        private static RuleEngine? _ruleEngine;
         private static Socks5Proxy? _socks;
 
         public static async Task Main(string[] args)
@@ -40,63 +40,13 @@ namespace SocksTunnel
                 return;
             }
 
-            _rules = new RuleEngine(cfg.Rules!, _log);
+            _ruleEngine = new RuleEngine(cfg.Rules!, _log);
             var role = cfg.Mode.ToLowerInvariant();
             var token = _cts.Token;
 
-            async Task OnOpenRemote(int sid, byte atyp, byte[] addrBytes, ushort port)
-            {
-                try
-                {
-                    var target = new TcpClient { NoDelay = true };
-                    if (atyp == 3)
-                    {
-                        var host = Encoding.ASCII.GetString(addrBytes);
-                        _log!.Info($"[RemoteOpen] connecting {host}:{port}");
-                        await target.ConnectAsync(host, port, token);
-                    }
-                    else
-                    {
-                        var ip = new IPAddress(addrBytes);
-                        _log!.Info($"[RemoteOpen] connecting {ip}:{port}");
-                        await target.ConnectAsync(ip, port, token);
-                    }
-
-                    await _tunnel!.SendOpenResultAsync(sid, true, token);
-                    var ts = target.GetStream();
-
-                    _tunnel!.SetSink(sid, async (data, ct) =>
-                    {
-                        try { await ts.WriteAsync(data, ct); } catch { }
-                    });
-
-                    var buf = new byte[64 * 1024];
-                    try
-                    {
-                        while (true)
-                        {
-                            int n = await ts.ReadAsync(buf, token);
-                            if (n <= 0) break;
-                            await _tunnel!.SendDataAsync(sid, new ReadOnlyMemory<byte>(buf, 0, n), token);
-                        }
-                    }
-                    catch { }
-                    finally
-                    {
-                        try { await _tunnel!.SendCloseAsync(sid, token); } catch { }
-                        try { target.Close(); } catch { }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log!.Warn($"[RemoteOpen] connect failed: {ex.Message}");
-                    try { await _tunnel!.SendOpenResultAsync(sid, false, token); } catch { }
-                }
-            }
-
             Func<Tunnel> factory = () =>
             {
-                var t = new Tunnel(_log!, role, (sid, atyp, addr, port) => OnOpenRemote(sid, atyp, addr, port));
+                var t = new Tunnel(_log!, role, (sid, atyp, addr, port) => OnOpenRemote(sid, atyp, addr, port, token));
                 _tunnel = t;
                 return t;
             };
@@ -106,7 +56,7 @@ namespace SocksTunnel
                 var socksEp = NetParse.ParseEndpoint(cfg.Socks);
                 _socks = new Socks5Proxy(
                     socksEp,
-                    _rules!,
+                    _ruleEngine!,
                     _log!,
                     _ => _tunnel
                 );
@@ -139,7 +89,7 @@ namespace SocksTunnel
                     return;
                 }
                 var serverEp = NetParse.ParseEndpoint(cfg.Server);
-                var connector = new TunnelClientConnector(serverEp, _log!, factory, TimeSpan.FromSeconds(3));
+                var connector = new TunnelClient(serverEp, _log!, factory, TimeSpan.FromSeconds(3));
                 var runTask = connector.RunAsync(token);
                 _socks?.Start();
 
@@ -149,8 +99,68 @@ namespace SocksTunnel
                 if (_socks is not null) await _socks.StopAsync();
                 if (_tunnel is not null) await _tunnel.DisposeAsync();
             }
-
             _log!.Info("SocksTunnel stopped.");
+        }
+
+
+        static async Task OnOpenRemote(int sid, byte atyp, byte[] addrBytes, ushort port, CancellationToken token)
+        {
+            try
+            {
+                var target = new TcpClient { NoDelay = true };
+                if (atyp == 3)
+                {
+                    var host = Encoding.ASCII.GetString(addrBytes);
+                    _log!.Info($"[RemoteOpen] connecting {host}:{port}");
+                    await target.ConnectAsync(host, port, _cts.Token);
+                }
+                else
+                {
+                    var ip = new IPAddress(addrBytes);
+                    _log!.Info($"[RemoteOpen] connecting {ip}:{port}");
+                    await target.ConnectAsync(ip, port, _cts.Token);
+                }
+
+                var ts = target.GetStream();
+
+                // FIX: 先安装 Sink 与 OnClosed，避免对端在收到 OpenResult 后立即发 Data 导致丢包
+                if (_tunnel!.TryGetStream(sid, out var st))
+                {
+                    st.OnClosed = () => { try { target.Close(); } catch { } };
+                }
+                _tunnel!.SetSink(sid, async (data, ct) =>
+                {
+                    try { await ts.WriteAsync(data, ct); } catch { }
+                });
+
+                // 再回发 OpenResult(success)
+                await _tunnel!.SendOpenResultAsync(sid, true, _cts.Token);
+
+                // 目标 -> 隧道
+                var buf = new byte[64 * 1024];
+                try
+                {
+                    while (true)
+                    {
+                        int n = await ts.ReadAsync(buf, _cts.Token);
+                        if (n <= 0) break;
+                        await _tunnel!.SendDataAsync(sid, new ReadOnlyMemory<byte>(buf, 0, n), _cts.Token);
+                    }
+                }
+                catch { }
+                finally
+                {
+                    try { await _tunnel!.SendCloseAsync(sid, _cts.Token); } catch { }
+                    try { target.Close(); } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log!.Warn($"[RemoteOpen] connect failed: {ex.Message}");
+                try { await _tunnel!.SendOpenResultAsync(sid, false, _cts.Token); } catch { }
+                // FIX: 打开失败时，清理本地占位的 StreamState
+                try { await _tunnel!.CloseStreamAsync(sid, _cts.Token); } catch { }
+            }
         }
     }
 }

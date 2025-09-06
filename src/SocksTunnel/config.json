@@ -6,7 +6,7 @@
   "Rules": [
     {
       "Action": "Forward",
-      "Host": "*.google.com"
+      "Host": "*.baidu.com"
     },
     {
       "Action": "Forward",
